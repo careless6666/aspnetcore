@@ -3,3 +3,30 @@
 <h1>Hello, world!</h1>
 
 Welcome to your new app.
+
+<p>
+    A button that disappears when clicked:
+    @if (showButtonThatDisappearsWhenClicked)
+    {
+        <button id="button-that-disappears" @onfocusout="DisappearingButtonFocusOut" @onclick="MakeButtonDisappear">
+            Click me
+        </button>
+    }
+
+    Received focus out: <strong id="button-received-focus-out">@buttonReceivedFocusOut</strong>
+</p>
+
+@code {
+    bool showButtonThatDisappearsWhenClicked = true;
+    bool buttonReceivedFocusOut;
+
+    void MakeButtonDisappear()
+    {
+        showButtonThatDisappearsWhenClicked = false;
+    }
+
+    void DisappearingButtonFocusOut()
+    {
+        buttonReceivedFocusOut = true;
+    }
+}
