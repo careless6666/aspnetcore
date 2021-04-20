@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.Lifetime;
@@ -158,12 +159,18 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
                 var loggerFactory = Services.GetRequiredService<ILoggerFactory>();
                 _renderer = new WebAssemblyRenderer(Services, loggerFactory);
 
-                var rootComponents = _rootComponents;
-                for (var i = 0; i < rootComponents.Length; i++)
+                await WebAssemblyCallQueue.ScheduleAsync((_rootComponents, _renderer), static state =>
                 {
-                    var rootComponent = rootComponents[i];
-                    await _renderer.AddComponentAsync(rootComponent.ComponentType, rootComponent.Selector, rootComponent.Parameters);
-                }
+                    var (rootComponents, renderer) = state;
+                    var allTasks = new List<Task>();
+                    for (var i = 0; i < rootComponents.Length; i++)
+                    {
+                        var rootComponent = rootComponents[i];
+                        allTasks.Add(renderer.AddComponentAsync(rootComponent.ComponentType, rootComponent.Selector, rootComponent.Parameters));
+                    }
+
+                    return Task.WhenAll(allTasks);
+                });
 
                 store.ExistingState.Clear();
 

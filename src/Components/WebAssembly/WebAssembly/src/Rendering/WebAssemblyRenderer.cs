@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components.RenderTree;
+using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using Microsoft.AspNetCore.Components.WebAssembly.Services;
 using Microsoft.Extensions.Logging;
 using static Microsoft.AspNetCore.Internal.LinkerFlags;
@@ -18,11 +18,9 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
     /// </summary>
     internal class WebAssemblyRenderer : Renderer
     {
+        private static readonly Action NoAction = () => { };
         private readonly ILogger _logger;
         private readonly int _webAssemblyRendererId;
-        private readonly QueueWithLast<IncomingEventInfo> deferredIncomingEvents = new();
-
-        private bool isDispatchingEvent;
 
         /// <summary>
         /// Constructs an instance of <see cref="WebAssemblyRenderer"/>.
@@ -103,23 +101,14 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
                 _webAssemblyRendererId,
                 batch);
 
-            if (deferredIncomingEvents.Count == 0)
-            {
-                // In the vast majority of cases, since the call to update the UI is synchronous,
-                // we just return a pre-completed task from here.
-                return Task.CompletedTask;
-            }
-            else
-            {
-                // However, in the rare case where JS sent us any event notifications that we had to
-                // defer until later, we behave as if the renderbatch isn't acknowledged until we have at
-                // least dispatched those event calls. This is to make the WebAssembly behavior more
-                // consistent with the Server behavior, which receives batch acknowledgements asynchronously
-                // and they are queued up with any other calls from JS such as event calls. If we didn't
-                // do this, then the order of execution could be inconsistent with Server, and in fact
-                // leads to a specific bug: https://github.com/dotnet/aspnetcore/issues/26838
-                return deferredIncomingEvents.Last.StartHandlerCompletionSource.Task;
-            }
+            // Where possible, we prefer to treat the renderbatch as acknowledged synchronously,
+            // as it eliminates some nontrivial work. But in the case where there are queued
+            // work items (e.g., incoming events whose processing had to be deferred), then for
+            // consistency with Blazor Server we need to delay the renderbatch acknowledgement
+            // until the queued work is at least started.
+            return WebAssemblyCallQueue.HasUnstartedWork
+                ? WebAssemblyCallQueue.ScheduleAsync(NoAction)
+                : Task.CompletedTask;
         }
 
         /// <inheritdoc />
@@ -135,90 +124,6 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
             else
             {
                 Log.UnhandledExceptionRenderingComponent(_logger, exception);
-            }
-        }
-
-        /// <inheritdoc />
-        public override Task DispatchEventAsync(ulong eventHandlerId, EventFieldInfo? eventFieldInfo, EventArgs eventArgs)
-        {
-            // Be sure we only run one event handler at once. Although they couldn't run
-            // simultaneously anyway (there's only one thread), they could run nested on
-            // the stack if somehow one event handler triggers another event synchronously.
-            // We need event handlers not to overlap because (a) that's consistent with
-            // server-side Blazor which uses a sync context, and (b) the rendering logic
-            // relies completely on the idea that within a given scope it's only building
-            // or processing one batch at a time.
-            //
-            // The only currently known case where this makes a difference is in the E2E
-            // tests in ReorderingFocusComponent, where we hit what seems like a Chrome bug
-            // where mutating the DOM cause an element's "change" to fire while its "input"
-            // handler is still running (i.e., nested on the stack) -- this doesn't happen
-            // in Firefox. Possibly a future version of Chrome may fix this, but even then,
-            // it's conceivable that DOM mutation events could trigger this too.
-
-            if (isDispatchingEvent)
-            {
-                var info = new IncomingEventInfo(eventHandlerId, eventFieldInfo, eventArgs);
-                deferredIncomingEvents.Enqueue(info);
-                return info.FinishHandlerCompletionSource.Task;
-            }
-            else
-            {
-                try
-                {
-                    isDispatchingEvent = true;
-                    return base.DispatchEventAsync(eventHandlerId, eventFieldInfo, eventArgs);
-                }
-                finally
-                {
-                    isDispatchingEvent = false;
-
-                    if (deferredIncomingEvents.Count > 0)
-                    {
-                        // Fire-and-forget because the task we return from this method should only reflect the
-                        // completion of its own event dispatch, not that of any others that happen to be queued.
-                        // Also, ProcessNextDeferredEventAsync deals with its own async errors.
-                        _ = ProcessNextDeferredEventAsync();
-                    }
-                }
-            }
-        }
-
-        private async Task ProcessNextDeferredEventAsync()
-        {
-            var info = deferredIncomingEvents.Dequeue();
-
-            try
-            {
-                var handlerTask = DispatchEventAsync(info.EventHandlerId, info.EventFieldInfo, info.EventArgs);
-                info.StartHandlerCompletionSource.SetResult();
-                await handlerTask;
-                info.FinishHandlerCompletionSource.SetResult();
-            }
-            catch (Exception ex)
-            {
-                // Even if the handler threw synchronously, we at least started processing, so always complete successfully
-                info.StartHandlerCompletionSource.TrySetResult();
-
-                info.FinishHandlerCompletionSource.SetException(ex);
-            }
-        }
-
-        readonly struct IncomingEventInfo
-        {
-            public readonly ulong EventHandlerId;
-            public readonly EventFieldInfo? EventFieldInfo;
-            public readonly EventArgs EventArgs;
-            public readonly TaskCompletionSource StartHandlerCompletionSource;
-            public readonly TaskCompletionSource FinishHandlerCompletionSource;
-
-            public IncomingEventInfo(ulong eventHandlerId, EventFieldInfo? eventFieldInfo, EventArgs eventArgs)
-            {
-                EventHandlerId = eventHandlerId;
-                EventFieldInfo = eventFieldInfo;
-                EventArgs = eventArgs;
-                StartHandlerCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                FinishHandlerCompletionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
 
@@ -245,31 +150,6 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
                     logger,
                     exception.Message,
                     exception);
-            }
-        }
-
-        private class QueueWithLast<T>
-        {
-            private readonly Queue<T> _items = new();
-
-            public int Count => _items.Count;
-
-            public T? Last { get; private set; }
-
-            public T Dequeue()
-            {
-                if (_items.Count == 1)
-                {
-                    Last = default;
-                }
-
-                return _items.Dequeue();
-            }
-
-            public void Enqueue(T item)
-            {
-                Last = item;
-                _items.Enqueue(item);
             }
         }
     }
