@@ -337,6 +337,18 @@ namespace Microsoft.AspNetCore.Components.RenderTree
                 UpdateRenderTreeToMatchClientState(latestEquivalentEventHandlerId, fieldInfo);
             }
 
+            // It's rare, but it's possible to trigger an event while a batch is already in progress
+            // (e.g., synchronously from OnAfterRender). In this case we must not automatically
+            // start a new batch because there can only be one batch at a time.
+            // TODO: Is this the best way to handle it? Alternatives:
+            // - have WebAssemblyRender somehow know to queue the render requests that happen while
+            //   a batch is already in progress, like it does when an even dispatch is already in progress
+            // - change the ProcessRenderBatch logic to not trigger after-render callbacks until after
+            //   it's cleaned up the existing batch (drawback: if lots of OnAfterRender callbacks cause
+            //   rendering, they will all become separate batches instead of all being queued for invocation
+            //   after the current renderqueue).
+            var wasBatchAlreadyInProgress = _isBatchInProgress;
+
             Task? task = null;
             try
             {
@@ -353,11 +365,14 @@ namespace Microsoft.AspNetCore.Components.RenderTree
             }
             finally
             {
-                _isBatchInProgress = false;
+                if (!wasBatchAlreadyInProgress)
+                {
+                    _isBatchInProgress = false;
 
-                // Since the task has yielded - process any queued rendering work before we return control
-                // to the caller.
-                ProcessPendingRender();
+                    // Since the task has yielded - process any queued rendering work before we return control
+                    // to the caller.
+                    ProcessPendingRender();
+                }
             }
 
             // Task completed synchronously or is still running. We already processed all of the rendering
