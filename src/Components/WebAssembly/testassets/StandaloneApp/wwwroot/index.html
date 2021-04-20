@@ -19,5 +19,17 @@
     </div>
 
     <script src="_framework/blazor.webassembly.js"></script>
+    <script>
+        function myFocus(elem) {
+            elem.focus();
+        }
+
+        function myTriggerChange(elem) {
+            var evt = document.createEvent("HTMLEvents");
+            evt.initEvent("change", false, true);
+            elem.dispatchEvent(evt);
+        }
+
+    </script>
 </body>
 </html>
