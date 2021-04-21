@@ -159,17 +159,18 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
                 var loggerFactory = Services.GetRequiredService<ILoggerFactory>();
                 _renderer = new WebAssemblyRenderer(Services, loggerFactory);
 
-                await WebAssemblyCallQueue.ScheduleAsync((_rootComponents, _renderer), static state =>
+                WebAssemblyCallQueue.Schedule((_rootComponents, _renderer), static state =>
                 {
                     var (rootComponents, renderer) = state;
-                    var allTasks = new List<Task>();
                     for (var i = 0; i < rootComponents.Length; i++)
                     {
                         var rootComponent = rootComponents[i];
-                        allTasks.Add(renderer.AddComponentAsync(rootComponent.ComponentType, rootComponent.Selector, rootComponent.Parameters));
-                    }
 
-                    return Task.WhenAll(allTasks);
+                        // No need to await because we want the root components to be added in parallel (e.g.,
+                        // not waiting for each other's OnInitializedAsync tasks), and any async exceptions will
+                        // be handled by normal component lifecycle mechanisms.
+                        _ = renderer.AddComponentAsync(rootComponent.ComponentType, rootComponent.Selector, rootComponent.Parameters);
+                    }
                 });
 
                 store.ExistingState.Clear();

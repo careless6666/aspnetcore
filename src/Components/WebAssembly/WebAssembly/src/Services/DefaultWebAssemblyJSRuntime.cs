@@ -37,10 +37,10 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Services
         // Invoked via Mono's JS interop mechanism (invoke_method)
         public static void EndInvokeJS(string argsJson)
         {
-            // It's OK to discard the returned Task here, because EndInvokeJS does its own error handling,
-            // converting any exceptions into a failure on the original Task returned by BeginInvokeJS.
-            _ = WebAssemblyCallQueue.ScheduleAsync(argsJson, static argsJson =>
+            WebAssemblyCallQueue.Schedule(argsJson, static argsJson =>
             {
+                // This is not expected to throw, as it takes care of converting any unhandled user code
+                // exceptions into a failure on the JS Promise object.
                 DotNetDispatcher.EndInvokeJS(Instance, argsJson);
             });
         }
@@ -65,11 +65,10 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Services
             }
 
             var callInfo = new DotNetInvocationInfo(assemblyName, methodIdentifier, dotNetObjectId, callId);
-
-            // It's OK to discard the returned Task here, because BeginInvokeDotNet doesn't throw synchronously.
-            // If there's an exception in user code, it gets sent back to JS as the result of the promise.
-            _ = WebAssemblyCallQueue.ScheduleAsync((callInfo, argsJson), static state =>
+            WebAssemblyCallQueue.Schedule((callInfo, argsJson), static state =>
             {
+                // This is not expected to throw, as it takes care of converting any unhandled user code
+                // exceptions into a failure on the JS Promise object.
                 DotNetDispatcher.BeginInvokeDotNet(Instance, state.callInfo, state.argsJson);
             });
         }

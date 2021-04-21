@@ -18,7 +18,6 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
     /// </summary>
     internal class WebAssemblyRenderer : Renderer
     {
-        private static readonly Action NoAction = () => { };
         private readonly ILogger _logger;
         private readonly int _webAssemblyRendererId;
 
@@ -101,14 +100,22 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Rendering
                 _webAssemblyRendererId,
                 batch);
 
-            // Where possible, we prefer to treat the renderbatch as acknowledged synchronously,
-            // as it eliminates some nontrivial work. But in the case where there are queued
-            // work items (e.g., incoming events whose processing had to be deferred), then for
-            // consistency with Blazor Server we need to delay the renderbatch acknowledgement
-            // until the queued work is at least started.
-            return WebAssemblyCallQueue.HasUnstartedWork
-                ? WebAssemblyCallQueue.ScheduleAsync(NoAction)
-                : Task.CompletedTask;
+            if (WebAssemblyCallQueue.HasUnstartedWork)
+            {
+                // Because further incoming calls from JS to .NET are already queued (e.g., event notifications),
+                // we have to delay the renderbatch acknowledgement until it gets to the front of that queue.
+                // This is for consistency with Blazor Server which queues all JS-to-.NET calls relative to each
+                // other, and because various bits of cleanup logic rely on this ordering.
+                var tcs = new TaskCompletionSource();
+                WebAssemblyCallQueue.Schedule(tcs, static tcs => tcs.SetResult());
+                return tcs.Task;
+            }
+            else
+            {
+                // Nothing else is pending, so we can treat the renderbatch as acknowledged synchronously.
+                // This lets upstream code skip an expensive code path and avoids some allocations.
+                return Task.CompletedTask;
+            }
         }
 
         /// <inheritdoc />

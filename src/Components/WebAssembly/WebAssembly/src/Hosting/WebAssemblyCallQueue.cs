@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 
 namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
 {
@@ -23,147 +22,48 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
     internal static class WebAssemblyCallQueue
     {
         private static bool _isCallInProgress;
-        private static Queue<WorkItem> _pendingWork = new();
+        private static Queue<Action> _pendingWork = new();
 
         public static bool HasUnstartedWork => _pendingWork.Count > 0;
 
-        public static Task ScheduleAsync(Action callback)
+        /// <summary>
+        /// Runs the supplied callback when possible. If the call queue is empty, the callback is executed
+        /// synchronously. If some call is already executing within the queue, the callback is added to the
+        /// back of the queue and will be executed in turn.
+        /// </summary>
+        /// <typeparam name="T">The type of a state parameter for the callback</typeparam>
+        /// <param name="state">A state parameter for the callback. If the callback is able to execute synchronously, this allows us to avoid any allocations for the closure.</param>
+        /// <param name="callback">The callback to run.</param>
+        /// <remarks>
+        /// In most cases this should only be used for callbacks that will not throw, because
+        /// [1] Unhandled exceptions will be fatal to the application, as the work queue will no longer process
+        ///     further items (just like unhandled hub exceptions in Blazor Server)
+        /// [2] The exception will be thrown at the point of the top-level caller, which is not necessarily the
+        ///     code that scheduled the callback, so you may not be able to observe it.
+        ///
+        /// We could change this to return a Task and do the necessary try/catch things to direct exceptions back
+        /// to the code that scheduled the callback, but it's not required for current use cases and would require
+        /// at least an extra allocation and layer of try/catch per call, plus more work to schedule continuations
+        /// call site.
+        /// </remarks>
+        public static void Schedule<T>(T state, Action<T> callback)
         {
             if (_isCallInProgress)
             {
-                var workItem = new WorkItem(callback);
-                _pendingWork.Enqueue(workItem);
-                return workItem.CompletionTask;
+                _pendingWork.Enqueue(() => callback(state));
             }
             else
             {
                 _isCallInProgress = true;
-                try
-                {
-                    callback();
-                    return Task.CompletedTask;
-                }
-                finally
-                {
-                    BeginQueuedWorkItems(); // Does not throw
-                    _isCallInProgress = false;
-                }
-            }
-        }
+                callback(state);
 
-        public static Task ScheduleAsync<T>(T state, Action<T> callback)
-        {
-            if (_isCallInProgress)
-            {
-                var workItem = new WorkItem(() => callback(state));
-                _pendingWork.Enqueue(workItem);
-                return workItem.CompletionTask;
-            }
-            else
-            {
-                _isCallInProgress = true;
-                try
+                // Now run any queued work items
+                while (_pendingWork.TryDequeue(out var nextWorkItem))
                 {
-                    callback(state);
-                    return Task.CompletedTask;
+                    nextWorkItem();
                 }
-                finally
-                {
-                    BeginQueuedWorkItems(); // Does not throw
-                    _isCallInProgress = false;
-                }
-            }
-        }
 
-        public static Task ScheduleAsync<T>(T state, Func<T, Task> callback)
-        {
-            if (_isCallInProgress)
-            {
-                var workItem = new WorkItem(() => callback(state));
-                _pendingWork.Enqueue(workItem);
-                return workItem.CompletionTask;
-            }
-            else
-            {
-                _isCallInProgress = true;
-                try
-                {
-                    return callback(state);
-                }
-                finally
-                {
-                    BeginQueuedWorkItems(); // Does not throw
-                    _isCallInProgress = false;
-                }
-            }
-        }
-
-        private static void BeginQueuedWorkItems()
-        {
-            while (_pendingWork.TryDequeue(out var nextWorkItem))
-            {
-                nextWorkItem.Begin(); // Does not throw
-            }
-        }
-
-        private readonly struct WorkItem
-        {
-            private readonly TaskCompletionSource _taskCompletionSource;
-
-            public readonly Action? SyncCallback;
-            public readonly Func<Task>? AsyncCallback;
-            public Task CompletionTask => _taskCompletionSource.Task;
-
-            public WorkItem(Action callback)
-            {
-                SyncCallback = callback;
-                AsyncCallback = null;
-                _taskCompletionSource = new();
-            }
-
-            public WorkItem(Func<Task> callback)
-            {
-                SyncCallback = null;
-                AsyncCallback = callback;
-                _taskCompletionSource = new();
-            }
-
-            public void Begin()
-            {
-                if (SyncCallback != null)
-                {
-                    RunSync();
-                }
-                else
-                {
-                    _ = RunAsync();
-                }
-            }
-
-            private void RunSync()
-            {
-                try
-                {
-                    SyncCallback!();
-                    _taskCompletionSource.SetResult();
-                }
-                catch (Exception ex)
-                {
-                    _taskCompletionSource.SetException(ex);
-                }
-            }
-
-            private async Task RunAsync()
-            {
-                try
-                {
-                    await AsyncCallback!();
-                    _taskCompletionSource.SetResult();
-                }
-                catch (Exception ex)
-                {
-                    _taskCompletionSource.SetException(ex);
-                }
+                _isCallInProgress = false;
             }
         }
     }
