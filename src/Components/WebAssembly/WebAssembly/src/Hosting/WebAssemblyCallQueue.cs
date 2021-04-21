@@ -6,15 +6,13 @@ using System.Collections.Generic;
 
 namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
 {
-    // We want the execution ordering semantics to be as similar as possible between WebAssembly
-    // and Server hosting models. Since Server queues all incoming messages from JS relative to
-    // each other and doesn't execute them nested inside each others' call stacks, we want
-    // WebAssembly to behave as much like that as much as possible, but while retaining synchronous
-    // execution as much as possible.
+    // A mechanism for queuing JS-to-.NET calls so they aren't nested on the call stack and hence
+    // have the same ordering behaviors as in Blazor Server. This eliminates serveral inconsistency
+    // problems and bugs that otherwise require special-case solutions in other parts of the code.
     //
-    // We could use the whole SynchronizationContext infrastructure, but that would be expensive on
-    // payload size and harder to guarantee synchronous execution when possible. The following
-    // simplified work queue sufficies, at least until we have true multithreading.
+    // We could use a true SynchronizationContext for this, but that would be much heaver. This
+    // simple work queue doesn't rely on actual asynchrony and is careful to minimize allocations
+    // and extra try/catch layers. It sufficies, at least until we have true multithreading.
     //
     // Framework code should dispatch incoming async JS->.NET calls via this work queue. Application
     // developers don't need to, because we do it for them.
@@ -44,7 +42,7 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Hosting
         /// We could change this to return a Task and do the necessary try/catch things to direct exceptions back
         /// to the code that scheduled the callback, but it's not required for current use cases and would require
         /// at least an extra allocation and layer of try/catch per call, plus more work to schedule continuations
-        /// call site.
+        /// at the call site.
         /// </remarks>
         public static void Schedule<T>(T state, Action<T> callback)
         {
