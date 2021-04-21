@@ -40,7 +40,7 @@ namespace Microsoft.AspNetCore.Components.WebAssembly.Services
             WebAssemblyCallQueue.Schedule(argsJson, static argsJson =>
             {
                 // This is not expected to throw, as it takes care of converting any unhandled user code
-                // exceptions into a failure on the JS Promise object.
+                // exceptions into a failure on the Task that was returned when calling InvokeAsync.
                 DotNetDispatcher.EndInvokeJS(Instance, argsJson);
             });
         }
